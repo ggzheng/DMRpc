@@ -1,0 +1,544 @@
+
+##### Note in the end, load the R data output, and you will have 4 output files:
+##### regions_all, sumstats_all_anno, PCpcts_all, PCloading_all
+
+##### sumstats_all_anno: the oputput for annotated DMR analysis results
+##### PCpcts_all, PCloading_all: DMR internal output for regional PC info
+##### regions_all: regional stats
+
+
+################################################################
+################################################################
+################################################################
+##### Step 1: Set up (changes needed)
+################################################################
+################################################################
+################################################################
+
+################################################################
+##### DMRpc parameters (changes needed)
+################################################################
+
+#predefine regions of g: 1=genic, 2=intergenic 
+region_pick <- c("genic","intergenic")
+
+#change to 2 if your want to analyze intergenic regions
+g <- 1 
+region_pick[g]
+
+#MAC cutoffs 
+MAC_cutoff_pick <- 0.3
+
+#min variance explained
+PCcutoffs <- 0.8
+
+#max number of PCs to be used
+maxnumPCs <- 10
+
+################################################################
+##### Other parameters (changes needed)
+################################################################
+
+#input path, replace with your own
+
+#you should save three files under this: EPIC annotation file, regions_genic.csv, regions_intergenic.csv
+
+#EPIC annotation files are available at 
+#https://support.illumina.com/array/array_kits/infinium-methylationepic-beadchip-kit/downloads.html
+#save the EPIC annotation file as: MethylationEPIC_v_1_0_B4.csv
+
+#regions_genic.csv, regions_intergenic.csv are available at Github 
+#those are pre-define regions based the EPIC annotation file
+
+pathin <- "/yzheng/DMRpc/anno/"
+
+#output path, replace with your own
+pathout <- "/yzheng/DMRpc/output/"
+
+#set your seed
+seedid <- 864807
+
+set.seed(seedid)
+
+##############################################################################
+##### library  
+##############################################################################
+
+library(data.table)
+#library(dplyr)
+
+library(metap)
+library(reshape2)
+
+################################################################
+##### R functions
+################################################################
+
+# Get lower triangle of the correlation matrix
+get_lower_tri<-function(cormat){
+  cormat[upper.tri(cormat)] <- NA
+  return(cormat)
+}
+# Get upper triangle of the correlation matrix
+get_upper_tri <- function(cormat){
+  cormat[lower.tri(cormat)] <- NA
+  return(cormat)
+}
+
+
+################################################################
+################################################################
+################################################################
+#### Step 2: Prep Your Data (changes needed)
+################################################################
+################################################################
+################################################################
+
+################################################################
+##### rename your data set as input file names (changes needed)  
+################################################################
+
+##### input file 1: a data set containing phenotype and covariates 
+################################################################
+
+pheno <- your_pheno_data 
+pheno$SampleID <- pheno$your_SubjectID
+pheno$phenotype <- pheno$your_phenotype #your_phenotype 
+
+varkeep <- c(
+#put covariates name here, such as age and sex
+"SampleID", "phenotype") 
+
+pheno <- pheno[, varkeep]
+dim(pheno) 
+
+pheno <- na.omit(pheno)
+dim(pheno) 
+length(unique(pheno$SampleID))   #make sure have no duplicate subject IDs
+
+#summary(pheno)
+rownames(pheno) <- pheno$SampleID
+
+##### input file 2: Methylation data (beta-values) 
+################################################################
+
+##### NOTE: should contain no missing values
+beta <- your_methlyation_data #beta-values
+
+dim(beta)
+sum(is.na(rownames(beta))) #should be 0
+
+##### deal with input file 2
+################################################################
+
+beta.norm<-beta
+for(i in 1:ncol(beta.norm)){
+	btest<-beta.norm[,i]
+	btest[which(btest<0.0001)]<-0.0001
+	beta.norm[,i]<-btest
+	}
+
+# Changing beta values of 1 to 0.9999
+for(i in 1:ncol(beta.norm)){
+	btest<-beta.norm[,i]
+	btest[which(btest>.9999)]<-0.9999
+	beta.norm[,i]<-btest
+	}
+
+##### remove X/Y probes 
+################################################################
+
+anno <- read.csv(paste0(pathin, "MethylationEPIC_v_1_0_B4.csv"), skip=7, stringsAsFactors=FALSE)
+
+cg_exclude <- anno[anno$CHR%in%c("X","Y"),]$IlmnID
+beta2 <- beta.norm[!rownames(beta.norm)%in%cg_exclude,]
+dim(beta2)      
+sum(is.na(beta2))     
+
+beta2 <- beta.norm
+
+###### Convert to Mvalues using log2
+###### use M values: https://github.com/TransBioInfoLab/coMethDMR
+################################################################
+
+beta3 <- log2(beta2/(1-beta2)) # log transforming
+betaP<-beta3
+
+##### Get final copies
+################################################################
+
+head(pheno)  
+betaP[1:5,1:5]
+dim(pheno)  #
+dim(betaP)  #
+
+pheno <- pheno[pheno$SampleID%in%colnames(betaP), ]
+pheno<-pheno[order(row.names(pheno)),]
+
+betaP <-betaP[,colnames(betaP)%in%row.names(pheno)]
+betaP <-betaP[,order(colnames(betaP))]
+
+dim(pheno)  #
+dim(betaP)  #
+
+#make sure data all lined up
+all(row.names(pheno)==colnames(betaP)) ##Should be all TRUE
+
+################################################################
+##### scale all continuous variables (changes needed)
+################################################################
+
+#continuous covariates
+scale_var <- c("Age", "PC1", "PC2", "PC3") ### replace with your own continuous covariates
+pheno[, scale_var] <-scale(pheno[, scale_var])
+
+################################################################
+##### specify covariate list (changes needed)
+##### those will be adjusted in DMRpc
+################################################################
+
+#covariate list
+covlist <- c("Age", "Sex", "PC1", "PC2", "PC3") ### replace with your own covariates
+
+
+
+
+##### You don't need to make any change below
+
+
+
+
+################################################################
+################################################################
+################################################################
+##### Step 3: Compute Regional Statistics (no change needed)
+##### average absolute pairwise correlation
+##### get CpG sites and region pos by actual available CpGs
+################################################################
+################################################################
+################################################################
+
+################################################################
+##### Pick the predefined region
+##### use the ones from own defines
+################################################################
+
+if(g==1){
+predefine1 <- read.csv(paste0(pathin, "regions_genic.csv"), stringsAsFactors = F, header=T)
+} else {
+predefine1 <- read.csv(paste0(pathin, "regions_intergenic.csv"), stringsAsFactors = F, header=T)
+}
+
+head(predefine1)
+dim(predefine1)
+table(predefine1$CHR)
+
+predefine2 <- strsplit(predefine1$cglist, ";")
+names(predefine2) <- predefine1$region
+length(predefine2)
+
+#for easy coding using the same name from CoMethDMR
+closeBy_ls <- predefine2
+
+################################################################
+##### Compute MAC 
+##### get list name and actual names
+################################################################
+
+listname <- names(closeBy_ls)
+#listname <- listname[c(25:50)]
+listname_chr <- sapply(strsplit(listname, "[:-]+"), "[", 1)
+listname_start <- sapply(strsplit(listname, "[:-]+"), "[", 2)
+listname_end <- sapply(strsplit(listname, "[:-]+"), "[", 3)
+
+listname_chr2 <- sapply(strsplit(listname_chr, "Chr"), "[", 2)
+
+name_start <- rep(NA, length(listname))
+name_end <- rep(NA, length(listname))
+
+nprobe <- rep(NA, length(listname))
+avgabscor <- rep(NA, length(listname))
+maxabscor <- rep(NA, length(listname))
+
+regioncpgs <- rep(NA, length(listname))
+regiongenes <- rep(NA, length(listname))
+regiongenes_unique <- rep(NA, length(listname))
+
+time_start <- Sys.time()
+paste0("Time start: ", Sys.time())
+
+for(i in 1:length(listname)){
+#i <-17;
+#print(paste0("current i = ", i, " out of ", length(listname)))
+
+#note this region_i is from the annotate, need to updated to methlyationdata
+region_i <- closeBy_ls[[i]]
+betaP_i <- betaP[row.names(betaP)%in%region_i,]
+region_i <- row.names(betaP_i)
+
+#number of probes
+nprobe[i] <- nrow(betaP_i)
+nrow(betaP_i)
+
+if(nrow(betaP_i)>=3){ ### if loop starts
+
+#new start and end for the region
+################################################################
+name_start[i] <- min(anno[anno$CHR==listname_chr2[i] & anno$IlmnID%in%region_i,]$MAPINFO)
+name_end[i] <- max(anno[anno$CHR==listname_chr2[i] & anno$IlmnID%in%region_i,]$MAPINFO)
+
+#all probes and genes
+################################################################
+regioncpgs[i] <- paste(region_i, collapse=',' )
+
+regiongenes[i] <- paste(gsub(";", ",", anno[anno$CHR==listname_chr2[i] & anno$IlmnID%in%region_i,]$UCSC_RefGene_Name), collapse=';' )
+
+regiongenes_unique[i] <- paste(sort(unique(unlist(strsplit(anno[anno$CHR==listname_chr2[i] & anno$IlmnID%in%region_i,]$UCSC_RefGene_Name, ";")))), collapse=';' )
+
+#correlation from original values
+################################################################
+cor_ri <- cor(t(betaP_i),use="pairwise.complete.obs")
+avgabscor[i] <- mean(abs(cor_ri[upper.tri(cor_ri)]))
+maxabscor[i] <- max(abs(cor_ri[upper.tri(cor_ri)]))
+
+}### if loop ends
+
+}#i loop
+
+time_end <- Sys.time()
+paste0("Time end: ", Sys.time())
+
+#Check running time:  
+time_end-time_start
+
+regions_all <- as.data.frame(cbind(
+listname, listname_chr, listname_start, listname_end, 
+name_end, name_start, 
+nprobe, avgabscor, maxabscor,
+regioncpgs, regiongenes, regiongenes_unique
+), stringsAsFactors=F)
+
+is.data.frame(regions_all)
+head(regions_all)
+str(regions_all)
+
+sapply(regions_all, class)
+
+regions_all[,3:9] <- sapply(regions_all[,3:9], as.numeric) 
+
+sapply(regions_all, class)
+head(regions_all)
+
+dim(regions_all) 
+
+################################################################
+##### keep regions with at 3 probe
+##### keep MAC at at least 0.3
+################################################################
+regions_all <- regions_all[regions_all$nprobe>=3,]
+table(regions_all$nprobe)
+
+regions_all <- regions_all[regions_all$maxabscor>=MAC_cutoff_pick,]
+dim(regions_all)
+
+################################################################
+##### get region list and their cpgs
+##### based on the randomly selected 100 subjects
+################################################################
+
+regions_ana <- regions_all
+
+regions_names <- regions_ana$listname
+regions_cgs <- closeBy_ls[regions_names]
+
+length(regions_names)  
+length(regions_cgs)   
+
+
+################################################################
+################################################################
+################################################################
+##### Step 4: Apply DMRpc Method (no change needed)
+################################################################
+################################################################
+################################################################
+
+sumstats_all <- data.frame(matrix(NA, ncol=5, nrow=length(regions_names)), stringsAsFactors=F)
+
+names(sumstats_all) <- c("listname", "njitter", "nPCskept", "varnPC", "Pval")
+
+PCpcts_all  <- vector(mode = "list", length=length(regions_names))
+PCloading_all <- vector(mode = "list", length=length(regions_names))
+
+t1 <- Sys.time()
+
+for(i in 1:length(regions_names)){
+#for(i in 1:10){
+#i <- 1
+
+print(paste0("Region i = ", i))
+
+################################################################
+################################################################
+##### Step 4.1: get PCs of methylation residuals
+################################################################
+################################################################
+
+################################################################
+##### Prep Step: get region and cg list info
+################################################################
+
+betaP_k <- betaP[row.names(betaP)%in%regions_cgs[[i]],]
+region_k <- row.names(betaP_k)
+
+##### IMPORTANT: not drop the subjects with zero variance
+##### jitter cg with zero variance
+subpos_jitter <- which(apply(betaP_k, 2, var)==0)
+if(length(subpos_jitter)>0){
+for(t in 1:length(subpos_jitter)){
+betaP_k[, subpos_jitter[t]] <- jitter(betaP_k[, subpos_jitter[t]])
+#dim(betaP_k)
+}}
+betaP_k <- betaP_k[,order(colnames(betaP_k))]
+
+#pheno <- pheno[order(row.names(pheno)),]
+if(!(all(rownames(pheno)==colnames(betaP_k)))){break} ##Should be all TRUE
+
+################################################################
+##### regress m-values, PC on residuals 
+################################################################
+
+##### Run linear models for each M values ~ covariates 
+##### get residuals 
+################################################################
+residuals_regionK <- data.frame(matrix(NA, ncol=nrow(pheno), nrow=length(region_k)))
+
+#get modelstrings 
+modelstringi <- paste0("cg~", paste(covlist, collapse='+')) 
+
+for(j in 1:length(region_k)){
+pheno$cg <- unlist(betaP_k[j,])
+lmfit <- lm(modelstringi, data=pheno)
+lmfitsummary <- summary(lmfit)
+
+#length(lmfit$residuals)
+residuals_regionK[j,] <- lmfitsummary$residuals
+}# j loop
+row.names(residuals_regionK) <- region_k
+names(residuals_regionK) <- names(lmfitsummary$residuals)
+
+#dim(residuals_regionK)
+#head(residuals_regionK)
+#table(lmfit$residuals==lmfitsummary$residuals)
+
+##### get PCA on residuals 
+################################################################
+#scale by each variable (row), not subject
+#note, the input file should be subjects X features
+#residuals_regionK: features are on the row
+
+pc <- prcomp(t(as.matrix(residuals_regionK)), center = T, scale. = T)
+methyPC <- pc$x
+#head(methyPC)
+
+##### compute # of PCs for pre-specified variance explained
+################################################################
+tmp1 <- summary(pc)$importance["Cumulative Proportion",]
+
+#number of PCs kept: use no more than 10 PCs
+nPCskept <- min(which(tmp1 >= PCcutoffs), maxnumPCs)
+
+#variance expalained
+varnPC <- tmp1[nPCskept]
+
+##### save important PC output
+################################################################
+
+##loadings
+PCloading_all[[i]] <- pc$rotation
+
+##variance explained
+PCpct<- summary(pc)$importance["Proportion of Variance",]
+names(PCpct) <- paste0(names(PCpct),"pct")
+PCpcts_all[[i]] <- PCpct
+
+
+################################################################
+################################################################
+##### Step 4.2: Meta PCs
+################################################################
+################################################################
+
+################################################################
+##### Meta PCs 
+################################################################
+sumstats_allPCk <- matrix(NA, ncol=4, ncol(methyPC))
+#Estimate  Std. Error    t value  Pr(>|t|)
+for(j in 1:ncol(methyPC)){
+lmfit2j <- lm(methyPC[,j]~pheno$phenotype)
+sumstatsj <- as.data.frame(summary(lmfit2j)$coef)
+sumstats_allPCk[j,] <- as.matrix(sumstatsj[row.names(sumstatsj)=="pheno$phenotype",])
+}  # j loop
+
+##### use top few PCs
+################################################################
+if(nPCskept>=2){
+p_metafisher   <- sumlog(sumstats_allPCk[1:nPCskept, 4])$p
+} else { #if only 1 PC kept, use the p-value for PC1#
+p_metafisher   <- sumstats_allPCk[1,4]
+}
+
+##### Output
+################################################################
+sumstats_all[i,] <- c(regions_names[i], length(subpos_jitter), nPCskept, varnPC, p_metafisher)
+
+} #i loop
+
+t2 <- Sys.time()
+t2-t1
+
+################################################################
+################################################################
+##### Step 4.3: FDR correction
+################################################################
+################################################################
+  
+sumstats_all[,2:ncol(sumstats_all)] <- sapply(sumstats_all[,2:ncol(sumstats_all)], as.numeric)  
+sumstats_all$Adj.Pval <- p.adjust(sumstats_all$Pval, "fdr")
+
+################################################################
+################################################################
+##### Step 4.4: Annotation
+################################################################
+################################################################
+  
+dim(sumstats_all)
+dim(regions_ana)
+
+sumstats_all_anno <- merge(sumstats_all, regions_ana, by="listname")
+dim(sumstats_all_anno)
+
+sumstats_all_anno <- sumstats_all_anno[order(sumstats_all_anno$Pval),]
+
+
+################################################################
+################################################################
+################################################################
+##### Step 5: Final Output
+################################################################
+################################################################
+################################################################
+
+outfile <- paste0(pathout, "DMRpc_results_",region_pick[g], ".Rdata") 
+outfile
+
+save(regions_all, sumstats_all_anno, PCpcts_all, PCloading_all, file=outfile)
+
+warnings()
+
+
+
+
+
+
+
